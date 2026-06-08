@@ -22,15 +22,25 @@ Claude Code persists conversations as JSONL under `~/.claude/projects/<slug>/<uu
 
 ## Install
 
+**One-liner (macOS / Linux):**
+
 ```sh
-cargo install ccsession
+curl -fsSL https://get-claude-code-session-editor.harshiitkgp.in/install.sh | sh
 ```
 
-Homebrew tap (forthcoming):
+Detects your OS + arch, downloads the matching prebuilt binary from the latest GitHub release, and drops `cc-session` into `/usr/local/bin` (or `~/.local/bin` if that's not writable). Override location via `CC_SESSION_INSTALL_DIR=...`, version via `CC_SESSION_VERSION=v0.1.0`.
+
+**From source:**
 
 ```sh
-brew install <tap>/cc-session
-# binary installs as `cc-session`
+cargo install cc-session
+```
+
+**Homebrew:**
+
+```sh
+brew tap dudegladiator/tap
+brew install cc-session
 ```
 
 ## Usage

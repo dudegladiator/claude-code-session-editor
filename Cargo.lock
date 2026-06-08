@@ -172,7 +172,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ccsession"
+name = "cc-session"
 version = "0.1.0"
 dependencies = [
  "anyhow",

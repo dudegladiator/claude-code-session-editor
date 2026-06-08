@@ -1,0 +1,25 @@
+name: Deploy installer site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'install.sh'
+      - '.github/workflows/deploy-site.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync install.sh into site/
+        run: cp install.sh site/install.sh
+
+      - name: Publish to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy site --project-name=cc-session-installer --branch=main
