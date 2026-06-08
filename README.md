@@ -6,19 +6,9 @@ Claude Code persists conversations as JSONL under `~/.claude/projects/<slug>/<uu
 
 ## Features
 
-- **Session browser** — every session across every project, sorted by recency, with project, title, modified time, size, and full UUID.
-- **Fuzzy search** — same engine as fzf/Helix (`nucleo-matcher`), searches project + title, ranks by score.
-- **Message viewer** — shows only real user/assistant text by default; system messages, tool blocks, attachments, and harness wrappers (`<bash-input>`, `<system-reminder>`, etc.) are hidden but preserved on disk.
-- **Edit a session** — open any session and surgically edit it.
-- **Delete individual messages** — pick one and drop it.
-- **Delete ranges, from-top, from-bottom** — bulk trim by range, prefix, or suffix.
-- **Turn-level auto-pair** — deleting a user message also deletes its assistant response (and vice versa). Marking any message in a turn deletes the whole turn cleanly.
-- **tool_use ↔ tool_result safety** — tool calls always travel with their results, so resume never breaks.
-- **Token counts per message** — tiktoken `cl100k_base`, with `usage` metadata as fallback when present.
-- **Atomic save with `.bak` backup** — write `.tmp`, fsync, rename. Backup written every save.
-- **Concurrent-open detection** — `lsof` check refuses to save while Claude Code holds the file. Override with `--force`.
-- **LLM-friendly non-interactive CLI** — `list`, `search`, `show`, `info`, `delete` subcommands with `--json` output. Other agents (Claude Code, Codex, scripts) can drive every action a human can.
-- **Cross-platform** — macOS and Linux. Windows lsof equivalent deferred.
+- **Edit your session data to manage context** — surgically delete noise (long tool dumps, stale exploration, leaked secrets) from a Claude Code session before resuming, so you keep useful history without burning context window.
+- **Safe deletes** — turn-level auto-pair removes a user prompt with its assistant reply; tool_use ↔ tool_result blocks always travel together. Atomic save with `.bak` backup; refuses to write while Claude Code has the file open (`--force` to override).
+- **TUI + scriptable CLI** — interactive ratatui browser with fuzzy search, plus `list / search / show / info / delete / update` subcommands with `--json` output so other agents (Claude Code, Codex, scripts) can drive every action.
 
 ## Install
 

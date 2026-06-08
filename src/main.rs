@@ -101,6 +101,10 @@ enum Command {
         #[arg(long)]
         version: Option<String>,
     },
+    /// Print a structured agent guide: workflow, JSON shapes, env vars,
+    /// exit codes. Designed for LLMs and scripts to read once and operate
+    /// autonomously.
+    AgentGuide,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -152,6 +156,10 @@ fn main() -> anyhow::Result<()> {
         ),
         Some(Command::Info { target, json }) => cli::info(&projects_dir, &target, json),
         Some(Command::Update { version }) => cli::update(version.as_deref()),
+        Some(Command::AgentGuide) => {
+            print!("{}", cli::AGENT_GUIDE);
+            Ok(())
+        }
     }
 }
 
