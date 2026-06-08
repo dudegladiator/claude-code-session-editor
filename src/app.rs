@@ -9,7 +9,7 @@ pub struct Config {
 
 pub enum Screen {
     List(screens::list::ListState),
-    Edit(screens::edit::EditState),
+    Edit(Box<screens::edit::EditState>),
 }
 
 pub struct App {

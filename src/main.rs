@@ -1,6 +1,9 @@
-use clap::Parser;
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
 
 mod app;
+mod cli;
 mod io;
 mod pairing;
 mod scan;
@@ -12,19 +15,126 @@ mod tokens;
 #[derive(Parser, Debug)]
 #[command(name = "cc-session", version, about = "Claude Code Session Editor")]
 struct Cli {
+    /// Override the Claude Code projects directory (defaults to ~/.claude/projects).
+    #[arg(long, value_name = "DIR", global = true)]
+    projects_dir: Option<PathBuf>,
+
     /// Bypass concurrent-open detection when saving.
-    #[arg(long)]
+    #[arg(long, global = true)]
     force: bool,
 
-    /// Override the Claude Code projects directory (defaults to ~/.claude/projects).
-    #[arg(long, value_name = "DIR")]
-    projects_dir: Option<std::path::PathBuf>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// List sessions across projects.
+    List {
+        /// Filter to a specific project slug (substring match).
+        #[arg(long)]
+        project: Option<String>,
+        /// Output JSON instead of a human table.
+        #[arg(long)]
+        json: bool,
+        /// Limit output to N entries.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Show messages in a session.
+    Show {
+        /// Session id (uuid), file path, or substring of either.
+        target: String,
+        /// Show every message including system, tool blocks, attachments.
+        #[arg(long)]
+        include_hidden: bool,
+        /// Show full message text instead of a 400-char preview.
+        #[arg(long)]
+        full: bool,
+        /// Output JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete messages from a session by index. Auto-pairs tool_use/tool_result.
+    Delete {
+        /// Session id, file path, or substring of either.
+        target: String,
+        /// Comma-separated 0-based indices to delete (e.g. 3,5,7).
+        #[arg(long, value_delimiter = ',')]
+        indices: Vec<usize>,
+        /// Delete the first N messages.
+        #[arg(long)]
+        from_top: Option<usize>,
+        /// Delete the last N messages.
+        #[arg(long)]
+        from_bottom: Option<usize>,
+        /// Inclusive range "lo..hi" (0-based).
+        #[arg(long)]
+        range: Option<String>,
+        /// Show what would be removed without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Output JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print metadata about a session.
+    Info {
+        target: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    app::run(app::Config {
-        force: cli.force,
-        projects_dir: cli.projects_dir,
-    })
+    let projects_dir = match &cli.projects_dir {
+        Some(p) => p.clone(),
+        None => default_projects_dir()?,
+    };
+
+    match cli.command {
+        None => app::run(app::Config {
+            force: cli.force,
+            projects_dir: Some(projects_dir),
+        }),
+        Some(Command::List {
+            project,
+            json,
+            limit,
+        }) => cli::list(&projects_dir, project.as_deref(), json, limit),
+        Some(Command::Show {
+            target,
+            include_hidden,
+            full,
+            json,
+        }) => cli::show(&projects_dir, &target, include_hidden, full, json),
+        Some(Command::Delete {
+            target,
+            indices,
+            from_top,
+            from_bottom,
+            range,
+            dry_run,
+            json,
+        }) => cli::delete(
+            &projects_dir,
+            &target,
+            cli::DeleteSpec {
+                indices,
+                from_top,
+                from_bottom,
+                range,
+            },
+            dry_run,
+            cli.force,
+            json,
+        ),
+        Some(Command::Info { target, json }) => cli::info(&projects_dir, &target, json),
+    }
+}
+
+fn default_projects_dir() -> anyhow::Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("could not resolve home dir"))?;
+    Ok(home.join(".claude").join("projects"))
 }

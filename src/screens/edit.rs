@@ -78,7 +78,9 @@ impl EditState {
     }
 
     fn toggle_mark_current(&mut self) {
-        let Some(idx) = self.current_real_idx() else { return };
+        let Some(idx) = self.current_real_idx() else {
+            return;
+        };
         if self.marked.contains(&idx) {
             self.marked.remove(&idx);
             if let Some(ids) = self.pairing.by_msg.get(&idx) {
@@ -126,8 +128,11 @@ impl EditState {
         ));
     }
 
+    #[allow(dead_code)]
     fn mark_to_top(&mut self) {
-        let Some(real_idx) = self.current_real_idx() else { return };
+        let Some(real_idx) = self.current_real_idx() else {
+            return;
+        };
         for i in 0..=real_idx {
             self.marked.insert(i);
         }
@@ -139,8 +144,11 @@ impl EditState {
         ));
     }
 
+    #[allow(dead_code)]
     fn mark_to_bottom(&mut self) {
-        let Some(real_idx) = self.current_real_idx() else { return };
+        let Some(real_idx) = self.current_real_idx() else {
+            return;
+        };
         let len = self.session.messages.len();
         for i in real_idx..len {
             self.marked.insert(i);
@@ -297,7 +305,10 @@ pub fn render(frame: &mut Frame, state: &mut EditState) {
         Some(b) => b.to_string(),
         None => "j/k move  t/b top/bottom  d mark  v range  s save  q back".into(),
     };
-    frame.render_widget(Paragraph::new(footer_text).wrap(Wrap { trim: true }), chunks[2]);
+    frame.render_widget(
+        Paragraph::new(footer_text).wrap(Wrap { trim: true }),
+        chunks[2],
+    );
 
     render_modal(frame, state, frame.area());
 }
@@ -328,7 +339,9 @@ fn build_item(idx: usize, msg: &Message, state: &EditState) -> ListItem<'static>
     };
 
     let body_style = if state.marked.contains(&idx) {
-        Style::default().fg(Color::Red).add_modifier(Modifier::CROSSED_OUT)
+        Style::default()
+            .fg(Color::Red)
+            .add_modifier(Modifier::CROSSED_OUT)
     } else {
         Style::default()
     };
@@ -340,7 +353,10 @@ fn build_item(idx: usize, msg: &Message, state: &EditState) -> ListItem<'static>
             format!("[{role}] "),
             Style::default().fg(role_color).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("{token_count}t  "), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("{token_count}t  "),
+            Style::default().fg(Color::DarkGray),
+        ),
         Span::styled(ts, Style::default().fg(Color::DarkGray)),
     ]));
     if body.is_empty() {
@@ -361,7 +377,11 @@ fn extract_plain_text(msg: &Message) -> Option<String> {
     match &body.content {
         Some(Value::String(s)) => {
             let t = s.trim();
-            if t.is_empty() { None } else { Some(t.to_string()) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
         }
         Some(Value::Array(blocks)) => {
             let parts: Vec<String> = blocks
@@ -369,9 +389,7 @@ fn extract_plain_text(msg: &Message) -> Option<String> {
                 .filter_map(|b| {
                     let obj = b.as_object()?;
                     if obj.get("type").and_then(Value::as_str) == Some("text") {
-                        obj.get("text")
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
+                        obj.get("text").and_then(Value::as_str).map(str::to_string)
                     } else {
                         None
                     }
@@ -389,7 +407,10 @@ fn extract_plain_text(msg: &Message) -> Option<String> {
 
 fn summarize_content(msg: &Message) -> String {
     let raw = extract_plain_text(msg).unwrap_or_default();
-    let flat: String = raw.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
+    let flat: String = raw
+        .chars()
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .collect();
     let trimmed = flat.trim();
     if trimmed.chars().count() <= 400 {
         trimmed.to_string()
@@ -415,7 +436,9 @@ fn compute_visible(messages: &[Message]) -> Vec<usize> {
         if role != "user" && role != "assistant" {
             continue;
         }
-        let Some(text) = extract_plain_text(msg) else { continue };
+        let Some(text) = extract_plain_text(msg) else {
+            continue;
+        };
         // Filter out pure tooling / harness wrappers that present as text but
         // carry no real conversation.
         let trimmed = text.trim();
@@ -632,8 +655,14 @@ mod tests {
         let s = make_state(vec![
             msg("system", json!("init")),
             msg("user", json!("hello")),
-            msg("assistant", json!([{"type":"tool_use","id":"t","name":"R","input":{}}])),
-            msg("user", json!([{"type":"tool_result","tool_use_id":"t","content":"x"}])),
+            msg(
+                "assistant",
+                json!([{"type":"tool_use","id":"t","name":"R","input":{}}]),
+            ),
+            msg(
+                "user",
+                json!([{"type":"tool_result","tool_use_id":"t","content":"x"}]),
+            ),
             msg("assistant", json!("real answer")),
         ]);
         assert_eq!(s.visible, vec![1, 4]);
@@ -642,7 +671,10 @@ mod tests {
     #[test]
     fn harness_wrappers_hidden() {
         let s = make_state(vec![
-            msg("user", json!("<local-command-caveat>boilerplate</local-command-caveat>")),
+            msg(
+                "user",
+                json!("<local-command-caveat>boilerplate</local-command-caveat>"),
+            ),
             msg("user", json!("<bash-input>ls</bash-input>")),
             msg("user", json!("real question")),
         ]);

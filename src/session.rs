@@ -32,7 +32,11 @@ pub struct Message {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
 
-    #[serde(rename = "parentUuid", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "parentUuid",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub parent_uuid: Option<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -118,12 +122,12 @@ impl Session {
                     out.push('\n');
                 }
                 None => {
-                    out.push_str(
-                        &serde_json::to_string(msg).map_err(|source| SessionError::Parse {
+                    out.push_str(&serde_json::to_string(msg).map_err(|source| {
+                        SessionError::Parse {
                             line: idx + 1,
                             source,
-                        })?,
-                    );
+                        }
+                    })?);
                     out.push('\n');
                 }
             }
@@ -174,7 +178,10 @@ mod tests {
         let content = "{\"type\":\"user\",\"uuid\":\"a\",\"experimental_flag\":true,\"message\":{\"role\":\"user\",\"content\":\"hi\",\"weird\":42}}\n";
         let f = write_tmp(content);
         let s = Session::load(f.path()).unwrap();
-        assert_eq!(s.render(&std::collections::HashSet::new()).unwrap(), content);
+        assert_eq!(
+            s.render(&std::collections::HashSet::new()).unwrap(),
+            content
+        );
     }
 
     #[test]

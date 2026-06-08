@@ -77,8 +77,7 @@ mod tests {
         save(&path, "v3", true).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "v3");
         assert_eq!(
-            fs::read_to_string(path.with_file_name("session.jsonl.bak"))
-                .unwrap(),
+            fs::read_to_string(path.with_file_name("session.jsonl.bak")).unwrap(),
             "v2"
         );
     }

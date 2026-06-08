@@ -19,7 +19,10 @@ pub fn fuzzy_filter<'a>(entries: &'a [SessionEntry], query: &str) -> Vec<&'a Ses
         .filter_map(|e| {
             let hay = format!("{} {}", e.project_slug, e.title);
             pattern
-                .score(nucleo_matcher::Utf32Str::Ascii(hay.as_bytes()), &mut matcher)
+                .score(
+                    nucleo_matcher::Utf32Str::Ascii(hay.as_bytes()),
+                    &mut matcher,
+                )
                 .or_else(|| {
                     // Fall back to UTF-32 path for non-ASCII titles.
                     let mut buf = Vec::new();
@@ -29,7 +32,7 @@ pub fn fuzzy_filter<'a>(entries: &'a [SessionEntry], query: &str) -> Vec<&'a Ses
                 .map(|score| (score, e))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|s| std::cmp::Reverse(s.0));
     scored.into_iter().map(|(_, e)| e).collect()
 }
 

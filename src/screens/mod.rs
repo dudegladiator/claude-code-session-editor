@@ -37,7 +37,7 @@ fn main_loop<B: ratatui::backend::Backend>(
     while !app.should_quit {
         terminal.draw(|frame| match &mut app.screen {
             Screen::List(state) => list::render(frame, state),
-            Screen::Edit(state) => edit::render(frame, state),
+            Screen::Edit(state) => edit::render(frame, state.as_mut()),
         })?;
 
         if event::poll(Duration::from_millis(200))? {
@@ -52,7 +52,7 @@ fn main_loop<B: ratatui::backend::Backend>(
 fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let transition = match &mut app.screen {
         Screen::List(state) => list::handle_key(state, key),
-        Screen::Edit(state) => edit::handle_key(state, key, app.force),
+        Screen::Edit(state) => edit::handle_key(state.as_mut(), key, app.force),
     }?;
     apply_transition(app, transition)
 }
@@ -72,7 +72,7 @@ fn apply_transition(app: &mut App, t: Transition) -> Result<()> {
             let session = crate::session::Session::load(&path)?;
             let pairing = crate::pairing::PairIndex::build(&session.messages);
             let state = edit::EditState::new(session, pairing);
-            app.screen = Screen::Edit(state);
+            app.screen = Screen::Edit(Box::new(state));
         }
         Transition::BackToList => {
             // Re-scan to refresh sizes/mtimes after potential save.

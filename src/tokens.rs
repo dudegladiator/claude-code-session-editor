@@ -39,8 +39,14 @@ impl TokenCounter {
     fn compute(&self, msg: &Message) -> usize {
         if let Some(body) = &msg.message {
             if let Some(usage) = body.extra.get("usage").and_then(Value::as_object) {
-                let input = usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
-                let output = usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+                let input = usage
+                    .get("input_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let output = usage
+                    .get("output_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
                 let total = (input + output) as usize;
                 if total > 0 {
                     return total;
@@ -143,8 +149,10 @@ mod tests {
             content: Some(Value::String("a".repeat(10_000))),
             extra: Default::default(),
         };
-        body.extra
-            .insert("usage".into(), json!({"input_tokens": 5, "output_tokens": 7}));
+        body.extra.insert(
+            "usage".into(),
+            json!({"input_tokens": 5, "output_tokens": 7}),
+        );
         let m = Message {
             r#type: Some("assistant".into()),
             uuid: None,

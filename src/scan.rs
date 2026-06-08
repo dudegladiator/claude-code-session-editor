@@ -81,7 +81,7 @@ pub fn scan(projects_dir: &Path) -> anyhow::Result<Vec<SessionEntry>> {
         }
     }
 
-    entries.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.mtime));
     Ok(entries)
 }
 
@@ -91,12 +91,10 @@ fn derive_title(path: &Path) -> String {
         Err(_) => return "<unreadable>".into(),
     };
     let reader = BufReader::new(file);
-    let mut peeked = 0u32;
-    for line in reader.lines() {
+    for (peeked, line) in reader.lines().enumerate() {
         if peeked >= 50 {
             break;
         }
-        peeked += 1;
         let raw = match line {
             Ok(l) => l,
             Err(_) => continue,
@@ -135,7 +133,13 @@ fn derive_title(path: &Path) -> String {
 fn clamp_title(s: &str) -> String {
     let flat: String = s
         .chars()
-        .map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c })
+        .map(|c| {
+            if c == '\n' || c == '\r' || c == '\t' {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
     let trimmed = flat.trim();
     if trimmed.chars().count() <= TITLE_LIMIT {
@@ -239,7 +243,12 @@ mod tests {
     #[test]
     fn malformed_first_line_recovers() {
         let dir = tempfile::tempdir().unwrap();
-        make_session(dir.path(), "p", "s", "not json\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"ok\"}}\n");
+        make_session(
+            dir.path(),
+            "p",
+            "s",
+            "not json\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"ok\"}}\n",
+        );
         let entries = scan(dir.path()).unwrap();
         assert_eq!(entries[0].title, "ok");
     }

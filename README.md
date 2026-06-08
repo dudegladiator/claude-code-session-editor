@@ -48,11 +48,42 @@ cc-session --version
 | Key | Action |
 |-----|--------|
 | `j` / `k` | move selection |
-| `gg` / `G` | jump top / bottom |
+| `t` / `b` | jump top / bottom |
 | `d` | toggle delete on current message (auto-pairs tool_use/result) |
 | `v` | start visual range selection |
 | `s` | save |
 | `q` | back to list |
+
+## Non-interactive CLI (LLM-friendly)
+
+Every operation is also available as a subcommand with structured output, so other agents (Claude Code, Codex, scripts, CI) can drive the editor without a human at the terminal.
+
+```sh
+cc-session list --json [--project <slug>] [--limit N]
+cc-session show <id-or-path> [--json] [--full] [--include-hidden]
+cc-session info <id-or-path> [--json]
+cc-session delete <id-or-path> --indices 3,5,7 [--from-top N] [--from-bottom N] [--range lo..hi] [--dry-run] [--force] [--json]
+```
+
+`<id-or-path>` accepts a full path, a session UUID, or a unique substring of one. Indices are 0-based positions in the raw JSONL (use `cc-session show --json` to map text → index). Auto-pair always extends the delete set to keep `tool_use`/`tool_result` blocks together; `paired_added` in the output reports what was added.
+
+### Example LLM workflow
+
+```sh
+# 1. Pick a session.
+cc-session list --json --limit 5
+
+# 2. Inspect messages.
+cc-session show 20042ea8 --json
+
+# 3. Preview the edit.
+cc-session delete 20042ea8 --indices 4,6 --dry-run --json
+
+# 4. Apply.
+cc-session delete 20042ea8 --indices 4,6 --json
+```
+
+The `delete` JSON output names every key an agent needs: `requested`, `paired_added`, `after_auto_pair`, `total_messages_before`, `total_messages_after`, `dry_run`, `saved`, `backup`, `warnings`. Pair this with `--dry-run` to plan, then drop the flag to apply.
 
 ## Safety
 
