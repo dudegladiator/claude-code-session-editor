@@ -1,0 +1,40 @@
+[package]
+name = "ccsession"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Interactive TUI editor for Claude Code session JSONL files. Browse, search, and surgically delete messages while preserving tool_use/tool_result pairing."
+authors = ["ccsession contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dudegladiator/claude-code-session-editor"
+homepage = "https://github.com/dudegladiator/claude-code-session-editor"
+readme = "README.md"
+keywords = ["claude", "claude-code", "tui", "session", "editor"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "cc-session"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tiktoken-rs = "0.6"
+dirs = "5"
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+
+[dev-dependencies]
+assert_fs = "1"
+tempfile = "3"
+pretty_assertions = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
