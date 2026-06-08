@@ -8,6 +8,8 @@ on:
 jobs:
   # 1. Build prebuilt binaries for each target and attach to the GitHub release.
   build:
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
