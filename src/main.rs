@@ -95,6 +95,16 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Self-update to the latest release (or a specific version).
+    Update {
+        /// Install a specific tag (e.g. `v0.2.0`). Default: latest.
+        #[arg(long)]
+        version: Option<String>,
+    },
+    /// Print a structured agent guide: workflow, JSON shapes, env vars,
+    /// exit codes. Designed for LLMs and scripts to read once and operate
+    /// autonomously.
+    AgentGuide,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -145,6 +155,11 @@ fn main() -> anyhow::Result<()> {
             json,
         ),
         Some(Command::Info { target, json }) => cli::info(&projects_dir, &target, json),
+        Some(Command::Update { version }) => cli::update(version.as_deref()),
+        Some(Command::AgentGuide) => {
+            print!("{}", cli::AGENT_GUIDE);
+            Ok(())
+        }
     }
 }
 

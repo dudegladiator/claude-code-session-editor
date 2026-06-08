@@ -474,6 +474,212 @@ pub fn info(projects_dir: &Path, target: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+// ---------- agent guide ----------
+
+pub const AGENT_GUIDE: &str = r#"# cc-session agent guide
+
+You are an LLM driving cc-session non-interactively. This guide is the
+single source of truth for how to use it. Read it once, then operate.
+
+## What this CLI does
+
+Edits Claude Code session JSONL files at ~/.claude/projects/<slug>/<uuid>.jsonl.
+It can browse, search, inspect, and surgically delete messages from any session
+while keeping tool_use/tool_result pairs and conversational turns intact.
+
+## Standard workflow
+
+1. Discover sessions:
+     cc-session list --json --limit 20
+     cc-session search "<query>" --json --limit 10
+2. Inspect one session:
+     cc-session info <id-or-path> --json
+     cc-session show <id-or-path> --json
+3. Plan an edit (always dry-run first):
+     cc-session delete <id> --indices 4,6 --dry-run --json
+4. Apply:
+     cc-session delete <id> --indices 4,6 --json
+   Pass --force only if the session is currently open in Claude Code; this
+   bypasses the lsof safety check.
+5. (Optional) self-update:
+     cc-session update [--version v0.2.0]
+
+## Target argument (<id-or-path>)
+
+For show / info / delete the first positional arg accepts:
+  - a full filesystem path to a .jsonl file
+  - a full session UUID (preferred — unambiguous)
+  - any unique substring of a session UUID (8+ chars usually fine)
+If a substring matches multiple sessions, the command errors and lists the
+candidates. Pass a longer prefix to disambiguate.
+
+## Index semantics
+
+Indices are 0-based positions in the raw JSONL (one per line). Use
+`cc-session show --json` to map message text -> index. Note:
+  - "Visible" messages (user / assistant text) are a subset; system messages,
+    tool_use blocks, tool_result blocks, attachments, and harness wrappers
+    (<bash-input>, <system-reminder>, etc.) are hidden by default. Pass
+    --include-hidden to see them in `show`.
+  - Indices DO shift after a successful delete. Always re-run `show` between
+    deletes if you are picking by index.
+
+## Auto-pair (always on)
+
+Two safety extensions run on every delete request:
+  1. tool_use <-> tool_result blocks always travel together. Marking either
+     side pulls the other.
+  2. Turn-level pairing: a "turn" = visible user msg + every message that
+     follows it until the next visible user msg. Marking ANY message in a
+     turn marks the whole turn (user prompt + assistant reply + intermediate
+     tool calls).
+
+The delete output reports `requested` (what you asked) and `paired_added`
+(what auto-pair added). Always inspect both before applying.
+
+## delete output JSON
+
+  {
+    "path":                  "<absolute path>",
+    "backup":                "<path>.bak | null when --dry-run",
+    "requested":             [int, ...],          // sorted, what you asked
+    "after_auto_pair":       [int, ...],          // sorted, final delete set
+    "paired_added":          [int, ...],          // sorted, set diff
+    "total_messages_before": int,
+    "total_messages_after":  int,
+    "dry_run":               bool,
+    "saved":                 bool,
+    "warnings":              [str, ...]           // e.g. orphan tool_results
+  }
+
+## show output JSON (per message)
+
+  {
+    "index":            int,
+    "role":             "user" | "assistant" | "system" | ...,
+    "type":             "<jsonl type field>",
+    "timestamp":        ISO8601 | null,
+    "tokens":           int,                    // tiktoken cl100k_base
+    "visible":          bool,
+    "has_tool_use":     bool,
+    "has_tool_result":  bool,
+    "tool_use_ids":     [str, ...],
+    "tool_result_ids":  [str, ...],
+    "text":             str,                    // 400-char preview by default
+    "truncated":        bool                    // true when text was clipped
+  }
+
+## info output JSON
+
+  {
+    "path", "project", "session_id", "title", "modified", "size",
+    "total_messages", "visible_messages", "user_messages", "assistant_messages",
+    "tool_use_count", "tool_result_count",
+    "orphan_result_indices": [int, ...],
+    "estimated_tokens": int
+  }
+
+## list / search output JSON (per entry)
+
+  { "project", "session_id", "title", "modified", "size", "path" }
+
+## Selection flags for delete
+
+You may combine any/all; the union is taken before auto-pair runs.
+  --indices 3,5,7        // exact indices (comma-separated)
+  --range lo..hi         // inclusive range, both ints
+  --from-top N           // first N messages
+  --from-bottom N        // last N messages
+
+At least one selection flag is required.
+
+## Safety guarantees
+
+  - Atomic save: writes <file>.tmp, fsync, rename to <file>.
+  - Backup: every save first writes <file>.bak (overwriting any prior bak).
+  - Concurrent-open: if `lsof` reports the file is open by another process,
+    save returns SaveError::Conflict ("file is open by another process; close
+    Claude Code or pass --force"). On non-unix or when lsof is missing, this
+    check is skipped with a stderr warning.
+  - Round-trip: untouched messages save byte-equal — unknown JSONL fields
+    are preserved verbatim via `serde(flatten)`.
+
+## Exit codes
+
+  0  success
+  1  generic error (parse failure, conflict, IO error, ambiguous target, ...)
+  2+ reserved for future structured errors
+Always inspect stderr on non-zero exit for the human-readable cause.
+
+## Environment overrides
+
+  CC_SESSION_VERSION         pin a specific release (used by `update`).
+  CC_SESSION_INSTALL_DIR     where install.sh drops the binary.
+  CC_SESSION_INSTALLER_URL   override installer URL for `update` (testing).
+
+## Useful examples (one-liners an agent can paste)
+
+  # delete top 50 messages of a long session, dry run first
+  cc-session delete <id> --from-top 50 --dry-run --json
+  cc-session delete <id> --from-top 50 --json
+
+  # purge messages 200..280 inclusive
+  cc-session delete <id> --range 200..280 --dry-run --json
+
+  # remove a single off-topic exchange (turn-pair pulls the assistant reply)
+  cc-session delete <id> --indices 14 --dry-run --json
+
+  # find a session about "auth middleware" and inspect
+  cc-session search "auth middleware" --json --limit 1
+  cc-session show <id-from-above> --json
+
+## Things this CLI will NOT do
+
+  - Edit message contents in place.
+  - Reorder messages.
+  - Merge or split sessions.
+  - Apply changes while Claude Code is actively writing to the file
+    (refuses unless --force).
+"#;
+
+// ---------- update ----------
+
+const INSTALLER_URL: &str = "https://get-claude-code-session-editor.harshiitkgp.in/install.sh";
+
+pub fn update(version: Option<&str>) -> Result<()> {
+    use std::process::{Command, Stdio};
+
+    let installer_url =
+        std::env::var("CC_SESSION_INSTALLER_URL").unwrap_or_else(|_| INSTALLER_URL.to_string());
+
+    println!("fetching installer: {installer_url}");
+
+    let mut curl = Command::new("curl")
+        .args(["-fsSL", &installer_url])
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("failed to spawn curl (is it installed?)")?;
+
+    let curl_stdout = curl.stdout.take().expect("curl stdout");
+
+    let mut sh = Command::new("sh");
+    sh.stdin(curl_stdout);
+    if let Some(v) = version {
+        sh.env("CC_SESSION_VERSION", v);
+    }
+    let status = sh.status().context("failed to spawn sh")?;
+
+    let curl_status = curl.wait().context("curl wait failed")?;
+    if !curl_status.success() {
+        bail!("curl exited with status {curl_status}");
+    }
+    if !status.success() {
+        bail!("installer exited with status {status}");
+    }
+    println!("update complete.");
+    Ok(())
+}
+
 // ---------- helpers ----------
 
 fn resolve_target(projects_dir: &Path, target: &str) -> Result<SessionEntry> {
