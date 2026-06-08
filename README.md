@@ -39,9 +39,10 @@ cargo install cc-session
 **Homebrew:**
 
 ```sh
-brew tap dudegladiator/tap
-brew install cc-session
+brew install dudegladiator/claude-code-session-editor/cc-session
 ```
+
+(This repo doubles as the tap — `Formula/cc-session.rb` lives at the root.)
 
 ## Usage
 
