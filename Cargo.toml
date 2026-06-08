@@ -1,6 +1,6 @@
 [package]
 name = "cc-session"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.75"
 description = "Interactive TUI editor for Claude Code session JSONL files. Browse, search, and surgically delete messages while preserving tool_use/tool_result pairing."
