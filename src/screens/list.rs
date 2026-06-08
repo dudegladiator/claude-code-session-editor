@@ -39,10 +39,7 @@ impl ListState {
     }
 
     pub fn filtered(&self) -> Vec<&SessionEntry> {
-        self.entries
-            .iter()
-            .filter(|e| search::matches(e, &self.query))
-            .collect()
+        search::fuzzy_filter(&self.entries, &self.query)
     }
 
     fn selected_path(&self) -> Option<std::path::PathBuf> {
@@ -94,9 +91,12 @@ pub fn handle_key(state: &mut ListState, key: KeyEvent) -> Result<Transition> {
                 state.table.select(Some(0));
             }
             KeyCode::Enter => {
-                state.mode = Mode::Browse;
-                state.table.select(Some(0));
+                if let Some(path) = state.selected_path() {
+                    return Ok(Transition::OpenEdit(path));
+                }
             }
+            KeyCode::Up => state.move_selection(-1),
+            KeyCode::Down => state.move_selection(1),
             KeyCode::Backspace => {
                 state.query.pop();
                 state.table.select(Some(0));
@@ -166,7 +166,7 @@ pub fn render(frame: &mut Frame, state: &mut ListState) {
 
     let footer_text = match state.mode {
         Mode::Browse => "j/k move  t/b top/bottom  /  search  Enter open  q quit",
-        Mode::Search => "type to filter  Enter accept  Esc cancel",
+        Mode::Search => "type to filter  ↑/↓ move  Enter open  Esc cancel",
     };
     frame.render_widget(Paragraph::new(footer_text), chunks[2]);
 }
