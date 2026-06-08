@@ -74,6 +74,35 @@ pub fn list(
     Ok(())
 }
 
+pub fn search(projects_dir: &Path, query: &str, limit: Option<usize>, json: bool) -> Result<()> {
+    let entries = scan::scan(projects_dir)?;
+    let mut hits: Vec<&SessionEntry> = crate::search::fuzzy_filter(&entries, query);
+    if let Some(n) = limit {
+        hits.truncate(n);
+    }
+    if json {
+        let out: Vec<ListItem> = hits.iter().map(|e| list_item(e)).collect();
+        println!("{}", serde_json::to_string_pretty(&out)?);
+    } else {
+        println!(
+            "{:<40} {:<50} {:<17} {:<10} id",
+            "project", "title", "modified", "size"
+        );
+        for e in &hits {
+            println!(
+                "{:<40} {:<50} {:<17} {:<10} {}",
+                truncate(&e.project_slug, 40),
+                truncate(&e.title, 50),
+                format_mtime(e),
+                human_size(e.size),
+                e.session_id
+            );
+        }
+        println!("\n{} match(es)", hits.len());
+    }
+    Ok(())
+}
+
 fn list_item(e: &SessionEntry) -> ListItem {
     ListItem {
         project: e.project_slug.clone(),

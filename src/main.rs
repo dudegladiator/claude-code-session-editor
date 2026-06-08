@@ -41,6 +41,17 @@ enum Command {
         #[arg(long)]
         limit: Option<usize>,
     },
+    /// Fuzzy search sessions by project + title. Same matcher the TUI uses.
+    Search {
+        /// Query string. Subsequence match, case-insensitive.
+        query: String,
+        /// Limit output to N best matches.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Output JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show messages in a session.
     Show {
         /// Session id (uuid), file path, or substring of either.
@@ -103,6 +114,9 @@ fn main() -> anyhow::Result<()> {
             json,
             limit,
         }) => cli::list(&projects_dir, project.as_deref(), json, limit),
+        Some(Command::Search { query, limit, json }) => {
+            cli::search(&projects_dir, &query, limit, json)
+        }
         Some(Command::Show {
             target,
             include_hidden,
