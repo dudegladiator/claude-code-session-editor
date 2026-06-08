@@ -95,6 +95,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Self-update to the latest release (or a specific version).
+    Update {
+        /// Install a specific tag (e.g. `v0.2.0`). Default: latest.
+        #[arg(long)]
+        version: Option<String>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -145,6 +151,7 @@ fn main() -> anyhow::Result<()> {
             json,
         ),
         Some(Command::Info { target, json }) => cli::info(&projects_dir, &target, json),
+        Some(Command::Update { version }) => cli::update(version.as_deref()),
     }
 }
 

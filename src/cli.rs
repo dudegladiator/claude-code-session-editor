@@ -474,6 +474,44 @@ pub fn info(projects_dir: &Path, target: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+// ---------- update ----------
+
+const INSTALLER_URL: &str = "https://get-claude-code-session-editor.harshiitkgp.in/install.sh";
+
+pub fn update(version: Option<&str>) -> Result<()> {
+    use std::process::{Command, Stdio};
+
+    let installer_url =
+        std::env::var("CC_SESSION_INSTALLER_URL").unwrap_or_else(|_| INSTALLER_URL.to_string());
+
+    println!("fetching installer: {installer_url}");
+
+    let mut curl = Command::new("curl")
+        .args(["-fsSL", &installer_url])
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("failed to spawn curl (is it installed?)")?;
+
+    let curl_stdout = curl.stdout.take().expect("curl stdout");
+
+    let mut sh = Command::new("sh");
+    sh.stdin(curl_stdout);
+    if let Some(v) = version {
+        sh.env("CC_SESSION_VERSION", v);
+    }
+    let status = sh.status().context("failed to spawn sh")?;
+
+    let curl_status = curl.wait().context("curl wait failed")?;
+    if !curl_status.success() {
+        bail!("curl exited with status {curl_status}");
+    }
+    if !status.success() {
+        bail!("installer exited with status {status}");
+    }
+    println!("update complete.");
+    Ok(())
+}
+
 // ---------- helpers ----------
 
 fn resolve_target(projects_dir: &Path, target: &str) -> Result<SessionEntry> {
