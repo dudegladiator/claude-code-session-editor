@@ -75,7 +75,8 @@ cc-session search <query> [--json] [--limit N]
 cc-session show   <id-or-path> [--json] [--full] [--include-hidden]
 cc-session info   <id-or-path> [--json]
 cc-session delete <id-or-path> --indices 3,5,7 [--from-top N] [--from-bottom N] [--range lo..hi] [--dry-run] [--force] [--json]
-cc-session update [--version v0.2.0]
+cc-session update  [--version v0.2.0]
+cc-session restore <id-or-path> [--list] [--json]
 ```
 `<id-or-path>` accepts a full path, a session UUID, or a unique substring of one. Indices are 0-based positions in the raw JSONL (use `cc-session show --json` to map text → index). Auto-pair always extends the delete set to keep `tool_use`/`tool_result` blocks together; `paired_added` in the output reports what was added.
 
