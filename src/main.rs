@@ -105,6 +105,18 @@ enum Command {
     /// exit codes. Designed for LLMs and scripts to read once and operate
     /// autonomously.
     AgentGuide,
+    /// Restore a session from its <file>.bak backup. Refuses to overwrite
+    /// while Claude Code holds the file open unless --force.
+    Restore {
+        /// Session id, file path, or substring of either.
+        target: String,
+        /// Just print the backup path and metadata; don't restore.
+        #[arg(long)]
+        list: bool,
+        /// Output JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -159,6 +171,9 @@ fn main() -> anyhow::Result<()> {
         Some(Command::AgentGuide) => {
             print!("{}", cli::AGENT_GUIDE);
             Ok(())
+        }
+        Some(Command::Restore { target, list, json }) => {
+            cli::restore(&projects_dir, &target, list, cli.force, json)
         }
     }
 }

@@ -248,6 +248,7 @@ pub fn show(
 #[derive(Serialize)]
 struct DeleteOutput {
     path: String,
+    parent_uuid_relinked: usize,
     backup: Option<String>,
     requested: Vec<usize>,
     after_auto_pair: Vec<usize>,
@@ -327,7 +328,7 @@ pub fn delete(
         ));
     }
 
-    let content = session.render(&marked)?;
+    let (content, relinked) = session.render_with_relink(&marked)?;
     let after = total - marked.len();
 
     let (saved, backup) = if dry_run {
@@ -344,6 +345,7 @@ pub fn delete(
 
     let out = DeleteOutput {
         path: entry.path.display().to_string(),
+        parent_uuid_relinked: relinked,
         backup,
         requested: requested_sorted,
         after_auto_pair: all_sorted,
@@ -368,6 +370,7 @@ pub fn delete(
             out.total_messages_after,
             out.total_messages_before - out.total_messages_after
         );
+        println!("parent_uuid relinked: {}", out.parent_uuid_relinked);
         println!("dry_run: {}", out.dry_run);
         println!("saved:   {}", out.saved);
         if let Some(b) = &out.backup {
@@ -474,6 +477,158 @@ pub fn info(projects_dir: &Path, target: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+// ---------- restore ----------
+
+#[derive(Serialize)]
+struct RestoreOutput {
+    path: String,
+    backup: String,
+    pre_restore_snapshot: Option<String>,
+    backup_messages: usize,
+    current_messages: Option<usize>,
+    backup_size: u64,
+    backup_modified: String,
+    listed_only: bool,
+    restored: bool,
+}
+
+pub fn restore(
+    projects_dir: &Path,
+    target: &str,
+    list_only: bool,
+    force: bool,
+    json: bool,
+) -> Result<()> {
+    let entry = resolve_target(projects_dir, target)?;
+    let bak_path = bak_path_for(&entry.path);
+    if !bak_path.exists() {
+        bail!(
+            "no backup found at {} — cc-session writes <file>.bak on every save",
+            bak_path.display()
+        );
+    }
+
+    // Sanity-check the backup parses; we don't want to restore a corrupt file.
+    let backup_session = Session::load(&bak_path)?;
+    let backup_messages = backup_session.messages.len();
+
+    let bak_meta = std::fs::metadata(&bak_path)?;
+    let bak_size = bak_meta.len();
+    let bak_mtime: DateTime<Local> = bak_meta
+        .modified()
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        .into();
+    let bak_modified = bak_mtime.format("%Y-%m-%d %H:%M:%S").to_string();
+
+    let current_messages = if entry.path.exists() {
+        Session::load(&entry.path).ok().map(|s| s.messages.len())
+    } else {
+        None
+    };
+
+    if list_only {
+        let out = RestoreOutput {
+            path: entry.path.display().to_string(),
+            backup: bak_path.display().to_string(),
+            pre_restore_snapshot: None,
+            backup_messages,
+            current_messages,
+            backup_size: bak_size,
+            backup_modified: bak_modified,
+            listed_only: true,
+            restored: false,
+        };
+        if json {
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        } else {
+            println!("path:           {}", out.path);
+            println!("backup:         {}", out.backup);
+            println!("backup msgs:    {}", out.backup_messages);
+            if let Some(c) = out.current_messages {
+                println!("current msgs:   {c}");
+            } else {
+                println!("current msgs:   (file missing)");
+            }
+            println!("backup size:    {}", human_size(out.backup_size));
+            println!("backup mtime:   {}", out.backup_modified);
+        }
+        return Ok(());
+    }
+
+    if !force && entry.path.exists() && super::io::lsof::is_open(&entry.path)? {
+        bail!("file is open by another process; close Claude Code or pass --force");
+    }
+
+    // If a current file exists, snapshot it aside before overwriting so the
+    // restore itself is reversible. Use a sibling path that does NOT match
+    // *.bak (which we'd clobber on next save).
+    let snapshot = if entry.path.exists() {
+        let snap = pre_restore_snapshot_path(&entry.path);
+        std::fs::copy(&entry.path, &snap)?;
+        Some(snap)
+    } else {
+        None
+    };
+
+    // Atomic restore: copy bak -> <path>.tmp, fsync, rename.
+    let tmp = with_extension_appended(&entry.path, "tmp");
+    std::fs::copy(&bak_path, &tmp)?;
+    {
+        let f = std::fs::OpenOptions::new().write(true).open(&tmp)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, &entry.path)?;
+
+    let out = RestoreOutput {
+        path: entry.path.display().to_string(),
+        backup: bak_path.display().to_string(),
+        pre_restore_snapshot: snapshot.map(|p| p.display().to_string()),
+        backup_messages,
+        current_messages,
+        backup_size: bak_size,
+        backup_modified: bak_modified,
+        listed_only: false,
+        restored: true,
+    };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&out)?);
+    } else {
+        println!("restored: {}", out.path);
+        println!("from:     {}", out.backup);
+        if let Some(s) = &out.pre_restore_snapshot {
+            println!("prev:     {s}  (snapshot of state before restore)");
+        }
+        println!(
+            "messages: {} (was {})",
+            out.backup_messages,
+            out.current_messages
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "missing".into())
+        );
+    }
+    Ok(())
+}
+
+fn bak_path_for(path: &Path) -> PathBuf {
+    with_extension_appended(path, "bak")
+}
+
+fn pre_restore_snapshot_path(path: &Path) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    with_extension_appended(path, &format!("pre-restore.{stamp}"))
+}
+
+fn with_extension_appended(path: &Path, suffix: &str) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".");
+    s.push(suffix);
+    PathBuf::from(s)
+}
+
 // ---------- agent guide ----------
 
 pub const AGENT_GUIDE: &str = r#"# cc-session agent guide
@@ -503,6 +658,10 @@ while keeping tool_use/tool_result pairs and conversational turns intact.
    bypasses the lsof safety check.
 5. (Optional) self-update:
      cc-session update [--version v0.2.0]
+6. If a delete breaks resume in Claude Code, restore from backup:
+     cc-session restore <id> --list           # inspect first
+     cc-session restore <id>                  # apply (snapshots current
+                                              # to <path>.pre-restore.<ts>)
 
 ## Target argument (<id-or-path>)
 
@@ -541,6 +700,9 @@ The delete output reports `requested` (what you asked) and `paired_added`
 
   {
     "path":                  "<absolute path>",
+    "parent_uuid_relinked":  int,                 // survivors whose parentUuid
+                                                  // was rewritten to skip
+                                                  // deleted ancestors
     "backup":                "<path>.bak | null when --dry-run",
     "requested":             [int, ...],          // sorted, what you asked
     "after_auto_pair":       [int, ...],          // sorted, final delete set
@@ -632,6 +794,15 @@ Always inspect stderr on non-zero exit for the human-readable cause.
   # find a session about "auth middleware" and inspect
   cc-session search "auth middleware" --json --limit 1
   cc-session show <id-from-above> --json
+
+## Resume safety: parentUuid auto-relink
+
+Every save scans surviving messages and rewrites any `parentUuid` that
+points to a now-deleted ancestor, walking up the chain to the nearest
+surviving ancestor (or null if the chain reaches the root). The count is
+reported in `parent_uuid_relinked`. This keeps Claude Code's resume
+renderer happy after scattered deletes; if it ever fails anyway,
+`cc-session restore <id>` rolls back to the .bak snapshot.
 
 ## Things this CLI will NOT do
 
