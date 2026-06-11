@@ -7,11 +7,11 @@ class CcSession < Formula
   on_macos do
     on_arm do
       url "https://github.com/dudegladiator/claude-code-session-editor/releases/download/v#{version}/cc-session-aarch64-apple-darwin.tar.gz"
-      sha256 "d2aadaba71fc86ba24ed2d673cad0a8be8759416d23c0a78cc63543e2abc741f"
+      sha256 "faa0b06647d87f93a7aa2916961428a878e79e805d9402e1c8a8459919df2982"
     end
     on_intel do
       url "https://github.com/dudegladiator/claude-code-session-editor/releases/download/v#{version}/cc-session-x86_64-apple-darwin.tar.gz"
-      sha256 "fea30ab7a76f00050b6b32bbc336fc1f6b7164b9d8f51cdd595da2c030f4e2a8"
+      sha256 "c94e2c73d83df362616fe83b7699beb2092b5afe66a1e624410765de4a02349c"
     end
   end
 
