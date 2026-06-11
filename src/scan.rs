@@ -86,13 +86,20 @@ pub fn scan(projects_dir: &Path) -> anyhow::Result<Vec<SessionEntry>> {
 }
 
 fn derive_title(path: &Path) -> String {
+    // Prefer Claude Code's auto-generated `aiTitle` (a single
+    // `{"type":"ai-title","aiTitle":"..."}` line that can appear anywhere
+    // in the file). Fall back to first user message text. Final fallback:
+    // a placeholder. Single pass, capped at 1000 lines to keep scan fast on
+    // very large sessions.
     let file = match fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return "<unreadable>".into(),
     };
     let reader = BufReader::new(file);
+    let mut first_user_text: Option<String> = None;
+
     for (peeked, line) in reader.lines().enumerate() {
-        if peeked >= 50 {
+        if peeked >= 1000 {
             break;
         }
         let raw = match line {
@@ -106,25 +113,39 @@ fn derive_title(path: &Path) -> String {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if v.get("type").and_then(Value::as_str) != Some("user") {
-            continue;
+        let entry_type = v.get("type").and_then(Value::as_str);
+
+        if entry_type == Some("ai-title") {
+            if let Some(t) = v.get("aiTitle").and_then(Value::as_str) {
+                let t = t.trim();
+                if !t.is_empty() {
+                    return clamp_title(t);
+                }
+            }
         }
-        let content = v.get("message").and_then(|m| m.get("content"));
-        let text = match content {
-            Some(Value::String(s)) => s.clone(),
-            Some(Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|b| {
-                    if b.get("type").and_then(Value::as_str) == Some("text") {
-                        b.get("text").and_then(Value::as_str).map(str::to_string)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" "),
-            _ => continue,
-        };
+
+        if first_user_text.is_none() && entry_type == Some("user") {
+            let content = v.get("message").and_then(|m| m.get("content"));
+            let text = match content {
+                Some(Value::String(s)) => s.clone(),
+                Some(Value::Array(arr)) => arr
+                    .iter()
+                    .filter_map(|b| {
+                        if b.get("type").and_then(Value::as_str) == Some("text") {
+                            b.get("text").and_then(Value::as_str).map(str::to_string)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                _ => continue,
+            };
+            first_user_text = Some(text);
+        }
+    }
+
+    if let Some(text) = first_user_text {
         return clamp_title(&text);
     }
     "<no user message>".into()
@@ -238,6 +259,32 @@ mod tests {
         let entries = scan(dir.path()).unwrap();
         assert!(!entries[0].title.contains('\n'));
         assert!(entries[0].title.contains("line1 line2"));
+    }
+
+    #[test]
+    fn ai_title_overrides_first_user_message() {
+        let dir = tempfile::tempdir().unwrap();
+        make_session(
+            dir.path(),
+            "p",
+            "s",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"raw question\"}}\n{\"type\":\"ai-title\",\"aiTitle\":\"Pretty Generated Title\"}\n",
+        );
+        let entries = scan(dir.path()).unwrap();
+        assert_eq!(entries[0].title, "Pretty Generated Title");
+    }
+
+    #[test]
+    fn empty_ai_title_falls_back_to_user_msg() {
+        let dir = tempfile::tempdir().unwrap();
+        make_session(
+            dir.path(),
+            "p",
+            "s",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"\"}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"fallback text\"}}\n",
+        );
+        let entries = scan(dir.path()).unwrap();
+        assert_eq!(entries[0].title, "fallback text");
     }
 
     #[test]
