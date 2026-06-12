@@ -2,6 +2,8 @@
 //! agents (Claude Code, Codex, scripts) — every `--json` mode emits a
 //! deterministic shape with stable keys.
 
+pub mod fork;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -10,7 +12,6 @@ use chrono::{DateTime, Local};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::io::atomic;
 use crate::pairing::PairIndex;
 use crate::scan::{self, SessionEntry};
 use crate::session::{Message, Session};
@@ -34,6 +35,8 @@ struct ListItem {
     modified: String,
     size: u64,
     path: String,
+    is_fork: bool,
+    fork_origin: Option<String>,
 }
 
 pub fn list(
@@ -55,19 +58,9 @@ pub fn list(
         let out: Vec<ListItem> = entries.iter().map(list_item).collect();
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        println!(
-            "{:<40} {:<50} {:<17} {:<10} id",
-            "project", "title", "modified", "size"
-        );
+        print_table_header();
         for e in &entries {
-            println!(
-                "{:<40} {:<50} {:<17} {:<10} {}",
-                truncate(&e.project_slug, 40),
-                truncate(&e.title, 50),
-                format_mtime(e),
-                human_size(e.size),
-                e.session_id
-            );
+            print_table_row(e);
         }
         println!("\n{} session(s)", entries.len());
     }
@@ -84,19 +77,9 @@ pub fn search(projects_dir: &Path, query: &str, limit: Option<usize>, json: bool
         let out: Vec<ListItem> = hits.iter().map(|e| list_item(e)).collect();
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        println!(
-            "{:<40} {:<50} {:<17} {:<10} id",
-            "project", "title", "modified", "size"
-        );
+        print_table_header();
         for e in &hits {
-            println!(
-                "{:<40} {:<50} {:<17} {:<10} {}",
-                truncate(&e.project_slug, 40),
-                truncate(&e.title, 50),
-                format_mtime(e),
-                human_size(e.size),
-                e.session_id
-            );
+            print_table_row(e);
         }
         println!("\n{} match(es)", hits.len());
     }
@@ -111,7 +94,27 @@ fn list_item(e: &SessionEntry) -> ListItem {
         modified: format_mtime(e),
         size: e.size,
         path: e.path.display().to_string(),
+        is_fork: e.is_fork,
+        fork_origin: e.fork_origin.clone(),
     }
+}
+
+fn print_table_header() {
+    println!(
+        "{:<40} {:<50} {:<17} {:<10} id",
+        "project", "title", "modified", "size"
+    );
+}
+
+fn print_table_row(e: &SessionEntry) {
+    println!(
+        "{:<40} {:<50} {:<17} {:<10} {}",
+        truncate(&e.project_slug, 40),
+        truncate(&e.title, 50),
+        format_mtime(e),
+        human_size(e.size),
+        e.session_id
+    );
 }
 
 // ---------- show ----------
@@ -188,7 +191,7 @@ pub fn show(
             truncated,
         });
     }
-    let _ = pairing; // pairing index could be exposed too; skip for now.
+    let _ = pairing;
 
     if json {
         let out = ShowOutput {
@@ -243,13 +246,15 @@ pub fn show(
     Ok(())
 }
 
-// ---------- delete ----------
+// ---------- delete (always forks) ----------
 
 #[derive(Serialize)]
 struct DeleteOutput {
-    path: String,
+    source_path: String,
+    new_session_id: Option<String>,
+    new_path: Option<String>,
+    resume_command: Option<String>,
     parent_uuid_relinked: usize,
-    backup: Option<String>,
     requested: Vec<usize>,
     after_auto_pair: Vec<usize>,
     paired_added: Vec<usize>,
@@ -265,7 +270,6 @@ pub fn delete(
     target: &str,
     spec: DeleteSpec,
     dry_run: bool,
-    force: bool,
     json: bool,
 ) -> Result<()> {
     let entry = resolve_target(projects_dir, target)?;
@@ -305,7 +309,7 @@ pub fn delete(
     }
 
     let mut marked = requested.clone();
-    let added_count = pairing.auto_pair(&mut marked);
+    pairing.auto_pair(&mut marked);
 
     let mut requested_sorted: Vec<usize> = requested.into_iter().collect();
     requested_sorted.sort_unstable();
@@ -317,7 +321,6 @@ pub fn delete(
         .copied()
         .collect();
     paired_added.sort_unstable();
-    let _ = added_count;
 
     let mut warnings = Vec::new();
     if !pairing.orphan_results.is_empty() {
@@ -328,25 +331,43 @@ pub fn delete(
         ));
     }
 
-    let (content, relinked) = session.render_with_relink(&marked)?;
+    // Render the would-be content (relink runs here too) just to compute
+    // relinked count and validate the plan.
+    let (_content, relinked) = session.render_with_relink(&marked)?;
     let after = total - marked.len();
 
-    let (saved, backup) = if dry_run {
-        (false, None)
+    let (saved, new_session_id, new_path, resume_command) = if dry_run {
+        // Even in dry-run, surface the new id we would mint so the agent can
+        // pre-write a resume command in its plan.
+        let preview_id = uuid::Uuid::new_v4().to_string();
+        let preview_path = entry
+            .path
+            .with_file_name(format!("{preview_id}.jsonl"))
+            .display()
+            .to_string();
+        (
+            false,
+            Some(preview_id.clone()),
+            Some(preview_path),
+            Some(format!("claude --resume {preview_id}")),
+        )
     } else {
-        match atomic::save(&entry.path, &content, force) {
-            Ok(out) => (true, Some(out.backup.display().to_string())),
-            Err(atomic::SaveError::Conflict) => {
-                bail!("file is open by another process; close Claude Code or pass --force");
-            }
-            Err(atomic::SaveError::Io(e)) => return Err(e.into()),
-        }
+        let outcome = fork::fork_session(&session, &marked)?;
+        let resume = format!("claude --resume {}", outcome.new_session_id);
+        (
+            true,
+            Some(outcome.new_session_id.clone()),
+            Some(outcome.new_path.display().to_string()),
+            Some(resume),
+        )
     };
 
     let out = DeleteOutput {
-        path: entry.path.display().to_string(),
+        source_path: entry.path.display().to_string(),
+        new_session_id,
+        new_path,
+        resume_command,
         parent_uuid_relinked: relinked,
-        backup,
         requested: requested_sorted,
         after_auto_pair: all_sorted,
         paired_added,
@@ -360,7 +381,7 @@ pub fn delete(
     if json {
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        println!("path:                {}", out.path);
+        println!("source:              {}", out.source_path);
         println!("requested:           {:?}", out.requested);
         println!("auto-paired added:   {:?}", out.paired_added);
         println!("final delete set:    {:?}", out.after_auto_pair);
@@ -373,8 +394,11 @@ pub fn delete(
         println!("parent_uuid relinked: {}", out.parent_uuid_relinked);
         println!("dry_run: {}", out.dry_run);
         println!("saved:   {}", out.saved);
-        if let Some(b) = &out.backup {
-            println!("backup:  {b}");
+        if let Some(p) = &out.new_path {
+            println!("forked:  {p}");
+        }
+        if let Some(r) = &out.resume_command {
+            println!("resume:  {r}");
         }
         for w in &out.warnings {
             println!("warning: {w}");
@@ -393,6 +417,8 @@ struct InfoOutput {
     title: String,
     modified: String,
     size: u64,
+    is_fork: bool,
+    fork_origin: Option<String>,
     total_messages: usize,
     visible_messages: usize,
     user_messages: usize,
@@ -442,6 +468,8 @@ pub fn info(projects_dir: &Path, target: &str, json: bool) -> Result<()> {
         title: entry.title.clone(),
         modified: format_mtime(&entry),
         size: entry.size,
+        is_fork: entry.is_fork,
+        fork_origin: entry.fork_origin.clone(),
         total_messages: session.messages.len(),
         visible_messages: visible,
         user_messages: users,
@@ -461,6 +489,12 @@ pub fn info(projects_dir: &Path, target: &str, json: bool) -> Result<()> {
         println!("title:             {}", out.title);
         println!("modified:          {}", out.modified);
         println!("size:              {}", human_size(out.size));
+        if out.is_fork {
+            println!(
+                "fork:              yes (origin: {})",
+                out.fork_origin.as_deref().unwrap_or("unknown")
+            );
+        }
         println!(
             "messages:          {} total, {} visible ({} user, {} assistant)",
             out.total_messages, out.visible_messages, out.user_messages, out.assistant_messages
@@ -477,341 +511,132 @@ pub fn info(projects_dir: &Path, target: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-// ---------- restore ----------
+// ---------- heatmap ----------
 
 #[derive(Serialize)]
-struct RestoreOutput {
-    path: String,
-    backup: String,
-    pre_restore_snapshot: Option<String>,
-    backup_messages: usize,
-    current_messages: Option<usize>,
-    backup_size: u64,
-    backup_modified: String,
-    listed_only: bool,
-    restored: bool,
+struct HeatmapTurn {
+    anchor_idx: usize,
+    start_idx: usize,
+    end_idx: usize,
+    msg_count: usize,
+    tokens: usize,
+    has_tool_use: bool,
+    preview: String,
 }
 
-pub fn restore(
-    projects_dir: &Path,
-    target: &str,
-    list_only: bool,
-    force: bool,
-    json: bool,
-) -> Result<()> {
+#[derive(Serialize)]
+struct HeatmapOutput {
+    path: String,
+    session_id: String,
+    total_messages: usize,
+    total_tokens: usize,
+    turns: Vec<HeatmapTurn>,
+}
+
+pub fn heatmap(projects_dir: &Path, target: &str, limit: Option<usize>, json: bool) -> Result<()> {
     let entry = resolve_target(projects_dir, target)?;
-    let bak_path = bak_path_for(&entry.path);
-    if !bak_path.exists() {
-        bail!(
-            "no backup found at {} — cc-session writes <file>.bak on every save",
-            bak_path.display()
-        );
-    }
+    let session = Session::load(&entry.path)?;
+    let pairing = PairIndex::build(&session.messages);
+    let tokens = TokenCounter::new();
 
-    // Sanity-check the backup parses; we don't want to restore a corrupt file.
-    let backup_session = Session::load(&bak_path)?;
-    let backup_messages = backup_session.messages.len();
-
-    let bak_meta = std::fs::metadata(&bak_path)?;
-    let bak_size = bak_meta.len();
-    let bak_mtime: DateTime<Local> = bak_meta
-        .modified()
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-        .into();
-    let bak_modified = bak_mtime.format("%Y-%m-%d %H:%M:%S").to_string();
-
-    let current_messages = if entry.path.exists() {
-        Session::load(&entry.path).ok().map(|s| s.messages.len())
-    } else {
-        None
-    };
-
-    if list_only {
-        let out = RestoreOutput {
-            path: entry.path.display().to_string(),
-            backup: bak_path.display().to_string(),
-            pre_restore_snapshot: None,
-            backup_messages,
-            current_messages,
-            backup_size: bak_size,
-            backup_modified: bak_modified,
-            listed_only: true,
-            restored: false,
-        };
-        if json {
-            println!("{}", serde_json::to_string_pretty(&out)?);
-        } else {
-            println!("path:           {}", out.path);
-            println!("backup:         {}", out.backup);
-            println!("backup msgs:    {}", out.backup_messages);
-            if let Some(c) = out.current_messages {
-                println!("current msgs:   {c}");
-            } else {
-                println!("current msgs:   (file missing)");
-            }
-            println!("backup size:    {}", human_size(out.backup_size));
-            println!("backup mtime:   {}", out.backup_modified);
+    // Group message indices by their turn anchor (visible-user idx).
+    let mut by_anchor: std::collections::BTreeMap<usize, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (idx, anchor) in pairing.turn_of.iter().enumerate() {
+        if *anchor == usize::MAX {
+            continue;
         }
-        return Ok(());
+        by_anchor.entry(*anchor).or_default().push(idx);
     }
 
-    if !force && entry.path.exists() && super::io::lsof::is_open(&entry.path)? {
-        bail!("file is open by another process; close Claude Code or pass --force");
-    }
+    let mut total_tokens = 0usize;
+    let mut turns: Vec<HeatmapTurn> = by_anchor
+        .into_iter()
+        .map(|(anchor, idxs)| {
+            let start = *idxs.first().unwrap_or(&anchor);
+            let end = *idxs.last().unwrap_or(&anchor);
+            let mut t = 0usize;
+            let mut has_tool = false;
+            for &i in &idxs {
+                t += tokens.count(i, &session.messages[i]);
+                let (u, _) = collect_tool_ids(&session.messages[i]);
+                if !u.is_empty() {
+                    has_tool = true;
+                }
+            }
+            total_tokens += t;
+            let preview = preview_for(&session.messages[anchor]);
+            HeatmapTurn {
+                anchor_idx: anchor,
+                start_idx: start,
+                end_idx: end,
+                msg_count: idxs.len(),
+                tokens: t,
+                has_tool_use: has_tool,
+                preview,
+            }
+        })
+        .collect();
 
-    // If a current file exists, snapshot it aside before overwriting so the
-    // restore itself is reversible. Use a sibling path that does NOT match
-    // *.bak (which we'd clobber on next save).
-    let snapshot = if entry.path.exists() {
-        let snap = pre_restore_snapshot_path(&entry.path);
-        std::fs::copy(&entry.path, &snap)?;
-        Some(snap)
+    turns.sort_by_key(|t| std::cmp::Reverse(t.tokens));
+    if let Some(n) = limit {
+        turns.truncate(n);
     } else {
-        None
-    };
-
-    // Atomic restore: copy bak -> <path>.tmp, fsync, rename.
-    let tmp = with_extension_appended(&entry.path, "tmp");
-    std::fs::copy(&bak_path, &tmp)?;
-    {
-        let f = std::fs::OpenOptions::new().write(true).open(&tmp)?;
-        f.sync_all()?;
+        turns.truncate(20);
     }
-    std::fs::rename(&tmp, &entry.path)?;
 
-    let out = RestoreOutput {
+    let out = HeatmapOutput {
         path: entry.path.display().to_string(),
-        backup: bak_path.display().to_string(),
-        pre_restore_snapshot: snapshot.map(|p| p.display().to_string()),
-        backup_messages,
-        current_messages,
-        backup_size: bak_size,
-        backup_modified: bak_modified,
-        listed_only: false,
-        restored: true,
+        session_id: entry.session_id.clone(),
+        total_messages: session.messages.len(),
+        total_tokens,
+        turns,
     };
 
     if json {
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        println!("restored: {}", out.path);
-        println!("from:     {}", out.backup);
-        if let Some(s) = &out.pre_restore_snapshot {
-            println!("prev:     {s}  (snapshot of state before restore)");
-        }
+        println!("path:           {}", out.path);
         println!(
-            "messages: {} (was {})",
-            out.backup_messages,
-            out.current_messages
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "missing".into())
+            "{} turns shown out of session total {} tokens",
+            out.turns.len(),
+            out.total_tokens
         );
+        println!();
+        println!(
+            "{:>5} {:>9} {:>5} {:>5}  preview",
+            "idx", "tokens", "msgs", "tool"
+        );
+        println!("{}", "-".repeat(80));
+        for t in &out.turns {
+            println!(
+                "{:>5} {:>9} {:>5} {:>5}  {}",
+                t.anchor_idx,
+                t.tokens,
+                t.msg_count,
+                if t.has_tool_use { "yes" } else { "" },
+                truncate(&t.preview, 80),
+            );
+        }
     }
     Ok(())
 }
 
-fn bak_path_for(path: &Path) -> PathBuf {
-    with_extension_appended(path, "bak")
-}
-
-fn pre_restore_snapshot_path(path: &Path) -> PathBuf {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    with_extension_appended(path, &format!("pre-restore.{stamp}"))
-}
-
-fn with_extension_appended(path: &Path, suffix: &str) -> PathBuf {
-    let mut s = path.as_os_str().to_owned();
-    s.push(".");
-    s.push(suffix);
-    PathBuf::from(s)
+fn preview_for(msg: &Message) -> String {
+    extract_plain_text(msg)
+        .unwrap_or_default()
+        .replace('\n', " ")
+        .trim()
+        .to_string()
 }
 
 // ---------- agent guide ----------
+//
+// Source of truth lives at AGENTS.md in the repo root so GitHub renders it
+// nicely AND `cc-session agent-guide` prints the same content. include_str!
+// inlines the file at compile time, so the binary stays self-contained.
 
-pub const AGENT_GUIDE: &str = r#"# cc-session agent guide
-
-You are an LLM driving cc-session non-interactively. This guide is the
-single source of truth for how to use it. Read it once, then operate.
-
-## What this CLI does
-
-Edits Claude Code session JSONL files at ~/.claude/projects/<slug>/<uuid>.jsonl.
-It can browse, search, inspect, and surgically delete messages from any session
-while keeping tool_use/tool_result pairs and conversational turns intact.
-
-## Standard workflow
-
-1. Discover sessions:
-     cc-session list --json --limit 20
-     cc-session search "<query>" --json --limit 10
-2. Inspect one session:
-     cc-session info <id-or-path> --json
-     cc-session show <id-or-path> --json
-3. Plan an edit (always dry-run first):
-     cc-session delete <id> --indices 4,6 --dry-run --json
-4. Apply:
-     cc-session delete <id> --indices 4,6 --json
-   Pass --force only if the session is currently open in Claude Code; this
-   bypasses the lsof safety check.
-5. (Optional) self-update:
-     cc-session update [--version v0.2.0]
-6. If a delete breaks resume in Claude Code, restore from backup:
-     cc-session restore <id> --list           # inspect first
-     cc-session restore <id>                  # apply (snapshots current
-                                              # to <path>.pre-restore.<ts>)
-
-## Target argument (<id-or-path>)
-
-For show / info / delete the first positional arg accepts:
-  - a full filesystem path to a .jsonl file
-  - a full session UUID (preferred — unambiguous)
-  - any unique substring of a session UUID (8+ chars usually fine)
-If a substring matches multiple sessions, the command errors and lists the
-candidates. Pass a longer prefix to disambiguate.
-
-## Index semantics
-
-Indices are 0-based positions in the raw JSONL (one per line). Use
-`cc-session show --json` to map message text -> index. Note:
-  - "Visible" messages (user / assistant text) are a subset; system messages,
-    tool_use blocks, tool_result blocks, attachments, and harness wrappers
-    (<bash-input>, <system-reminder>, etc.) are hidden by default. Pass
-    --include-hidden to see them in `show`.
-  - Indices DO shift after a successful delete. Always re-run `show` between
-    deletes if you are picking by index.
-
-## Auto-pair (always on)
-
-Two safety extensions run on every delete request:
-  1. tool_use <-> tool_result blocks always travel together. Marking either
-     side pulls the other.
-  2. Turn-level pairing: a "turn" = visible user msg + every message that
-     follows it until the next visible user msg. Marking ANY message in a
-     turn marks the whole turn (user prompt + assistant reply + intermediate
-     tool calls).
-
-The delete output reports `requested` (what you asked) and `paired_added`
-(what auto-pair added). Always inspect both before applying.
-
-## delete output JSON
-
-  {
-    "path":                  "<absolute path>",
-    "parent_uuid_relinked":  int,                 // survivors whose parentUuid
-                                                  // was rewritten to skip
-                                                  // deleted ancestors
-    "backup":                "<path>.bak | null when --dry-run",
-    "requested":             [int, ...],          // sorted, what you asked
-    "after_auto_pair":       [int, ...],          // sorted, final delete set
-    "paired_added":          [int, ...],          // sorted, set diff
-    "total_messages_before": int,
-    "total_messages_after":  int,
-    "dry_run":               bool,
-    "saved":                 bool,
-    "warnings":              [str, ...]           // e.g. orphan tool_results
-  }
-
-## show output JSON (per message)
-
-  {
-    "index":            int,
-    "role":             "user" | "assistant" | "system" | ...,
-    "type":             "<jsonl type field>",
-    "timestamp":        ISO8601 | null,
-    "tokens":           int,                    // tiktoken cl100k_base
-    "visible":          bool,
-    "has_tool_use":     bool,
-    "has_tool_result":  bool,
-    "tool_use_ids":     [str, ...],
-    "tool_result_ids":  [str, ...],
-    "text":             str,                    // 400-char preview by default
-    "truncated":        bool                    // true when text was clipped
-  }
-
-## info output JSON
-
-  {
-    "path", "project", "session_id", "title", "modified", "size",
-    "total_messages", "visible_messages", "user_messages", "assistant_messages",
-    "tool_use_count", "tool_result_count",
-    "orphan_result_indices": [int, ...],
-    "estimated_tokens": int
-  }
-
-## list / search output JSON (per entry)
-
-  { "project", "session_id", "title", "modified", "size", "path" }
-
-## Selection flags for delete
-
-You may combine any/all; the union is taken before auto-pair runs.
-  --indices 3,5,7        // exact indices (comma-separated)
-  --range lo..hi         // inclusive range, both ints
-  --from-top N           // first N messages
-  --from-bottom N        // last N messages
-
-At least one selection flag is required.
-
-## Safety guarantees
-
-  - Atomic save: writes <file>.tmp, fsync, rename to <file>.
-  - Backup: every save first writes <file>.bak (overwriting any prior bak).
-  - Concurrent-open: if `lsof` reports the file is open by another process,
-    save returns SaveError::Conflict ("file is open by another process; close
-    Claude Code or pass --force"). On non-unix or when lsof is missing, this
-    check is skipped with a stderr warning.
-  - Round-trip: untouched messages save byte-equal — unknown JSONL fields
-    are preserved verbatim via `serde(flatten)`.
-
-## Exit codes
-
-  0  success
-  1  generic error (parse failure, conflict, IO error, ambiguous target, ...)
-  2+ reserved for future structured errors
-Always inspect stderr on non-zero exit for the human-readable cause.
-
-## Environment overrides
-
-  CC_SESSION_VERSION         pin a specific release (used by `update`).
-  CC_SESSION_INSTALL_DIR     where install.sh drops the binary.
-  CC_SESSION_INSTALLER_URL   override installer URL for `update` (testing).
-
-## Useful examples (one-liners an agent can paste)
-
-  # delete top 50 messages of a long session, dry run first
-  cc-session delete <id> --from-top 50 --dry-run --json
-  cc-session delete <id> --from-top 50 --json
-
-  # purge messages 200..280 inclusive
-  cc-session delete <id> --range 200..280 --dry-run --json
-
-  # remove a single off-topic exchange (turn-pair pulls the assistant reply)
-  cc-session delete <id> --indices 14 --dry-run --json
-
-  # find a session about "auth middleware" and inspect
-  cc-session search "auth middleware" --json --limit 1
-  cc-session show <id-from-above> --json
-
-## Resume safety: parentUuid auto-relink
-
-Every save scans surviving messages and rewrites any `parentUuid` that
-points to a now-deleted ancestor, walking up the chain to the nearest
-surviving ancestor (or null if the chain reaches the root). The count is
-reported in `parent_uuid_relinked`. This keeps Claude Code's resume
-renderer happy after scattered deletes; if it ever fails anyway,
-`cc-session restore <id>` rolls back to the .bak snapshot.
-
-## Things this CLI will NOT do
-
-  - Edit message contents in place.
-  - Reorder messages.
-  - Merge or split sessions.
-  - Apply changes while Claude Code is actively writing to the file
-    (refuses unless --force).
-"#;
+pub const AGENT_GUIDE: &str = include_str!("../AGENTS.md");
 
 // ---------- update ----------
 
@@ -857,7 +682,6 @@ fn resolve_target(projects_dir: &Path, target: &str) -> Result<SessionEntry> {
     // Direct path?
     let p = PathBuf::from(target);
     if p.is_file() {
-        // Build a minimal SessionEntry from the path itself.
         let meta = std::fs::metadata(&p)?;
         let session_id = p
             .file_stem()
@@ -875,6 +699,8 @@ fn resolve_target(projects_dir: &Path, target: &str) -> Result<SessionEntry> {
             mtime: meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
             size: meta.len(),
             path: p,
+            is_fork: false,
+            fork_origin: None,
         });
     }
 
@@ -892,7 +718,6 @@ fn resolve_target(projects_dir: &Path, target: &str) -> Result<SessionEntry> {
         return Err(anyhow!("no session matched '{target}'"));
     }
     if matches.len() > 1 {
-        // Prefer exact id match.
         let exact: Vec<&&SessionEntry> = matches
             .iter()
             .filter(|e| e.session_id.to_lowercase() == needle)

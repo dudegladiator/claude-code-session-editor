@@ -13,7 +13,18 @@ pub struct SessionEntry {
     pub mtime: SystemTime,
     pub size: u64,
     pub path: PathBuf,
+    /// True when the session file carries the cc-session-fork sentinel,
+    /// meaning this file was produced by `cc-session delete` and the title
+    /// should be displayed with an `[edited]` prefix.
+    pub is_fork: bool,
+    /// When `is_fork`, the original session id this file was forked from
+    /// (best-effort, may be empty).
+    pub fork_origin: Option<String>,
 }
+
+/// Public marker line type used to tag forked session files. Kept here as a
+/// constant so scan / fork agree.
+pub const FORK_SENTINEL_TYPE: &str = "cc-session-fork";
 
 const TITLE_LIMIT: usize = 60;
 
@@ -67,8 +78,14 @@ pub fn scan(projects_dir: &Path) -> anyhow::Result<Vec<SessionEntry>> {
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let title = derive_title(&path);
+            let scanned = scan_one(&path);
             let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+
+            let title = if scanned.is_fork {
+                format!("[edited] {}", scanned.title)
+            } else {
+                scanned.title
+            };
 
             entries.push(SessionEntry {
                 project_slug: project_slug.clone(),
@@ -77,6 +94,8 @@ pub fn scan(projects_dir: &Path) -> anyhow::Result<Vec<SessionEntry>> {
                 mtime,
                 size: meta.len(),
                 path,
+                is_fork: scanned.is_fork,
+                fork_origin: scanned.fork_origin,
             });
         }
     }
@@ -85,18 +104,28 @@ pub fn scan(projects_dir: &Path) -> anyhow::Result<Vec<SessionEntry>> {
     Ok(entries)
 }
 
-fn derive_title(path: &Path) -> String {
-    // Prefer Claude Code's auto-generated `aiTitle` (a single
-    // `{"type":"ai-title","aiTitle":"..."}` line that can appear anywhere
-    // in the file). Fall back to first user message text. Final fallback:
-    // a placeholder. Single pass, capped at 1000 lines to keep scan fast on
-    // very large sessions.
+struct ScannedMeta {
+    title: String,
+    is_fork: bool,
+    fork_origin: Option<String>,
+}
+
+fn scan_one(path: &Path) -> ScannedMeta {
     let file = match fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return "<unreadable>".into(),
+        Err(_) => {
+            return ScannedMeta {
+                title: "<unreadable>".into(),
+                is_fork: false,
+                fork_origin: None,
+            };
+        }
     };
     let reader = BufReader::new(file);
     let mut first_user_text: Option<String> = None;
+    let mut ai_title: Option<String> = None;
+    let mut is_fork = false;
+    let mut fork_origin: Option<String> = None;
 
     for (peeked, line) in reader.lines().enumerate() {
         if peeked >= 1000 {
@@ -115,13 +144,24 @@ fn derive_title(path: &Path) -> String {
         };
         let entry_type = v.get("type").and_then(Value::as_str);
 
-        if entry_type == Some("ai-title") {
+        if entry_type == Some(FORK_SENTINEL_TYPE) {
+            is_fork = true;
+            if let Some(o) = v.get("origin").and_then(Value::as_str) {
+                if !o.is_empty() {
+                    fork_origin = Some(o.to_string());
+                }
+            }
+            continue;
+        }
+
+        if ai_title.is_none() && entry_type == Some("ai-title") {
             if let Some(t) = v.get("aiTitle").and_then(Value::as_str) {
                 let t = t.trim();
                 if !t.is_empty() {
-                    return clamp_title(t);
+                    ai_title = Some(clamp_title(t));
                 }
             }
+            continue;
         }
 
         if first_user_text.is_none() && entry_type == Some("user") {
@@ -145,10 +185,15 @@ fn derive_title(path: &Path) -> String {
         }
     }
 
-    if let Some(text) = first_user_text {
-        return clamp_title(&text);
+    let title = ai_title
+        .or_else(|| first_user_text.as_deref().map(clamp_title))
+        .unwrap_or_else(|| "<no user message>".into());
+
+    ScannedMeta {
+        title,
+        is_fork,
+        fork_origin,
     }
-    "<no user message>".into()
 }
 
 fn clamp_title(s: &str) -> String {
@@ -285,6 +330,35 @@ mod tests {
         );
         let entries = scan(dir.path()).unwrap();
         assert_eq!(entries[0].title, "fallback text");
+    }
+
+    #[test]
+    fn fork_sentinel_marks_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        make_session(
+            dir.path(),
+            "p",
+            "s",
+            "{\"type\":\"cc-session-fork\",\"origin\":\"old-id\",\"forked_at\":\"2026-06-11T00:00:00Z\"}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
+        );
+        let entries = scan(dir.path()).unwrap();
+        assert!(entries[0].is_fork);
+        assert_eq!(entries[0].fork_origin.as_deref(), Some("old-id"));
+        assert!(entries[0].title.starts_with("[edited] "));
+    }
+
+    #[test]
+    fn no_sentinel_no_badge() {
+        let dir = tempfile::tempdir().unwrap();
+        make_session(
+            dir.path(),
+            "p",
+            "s",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
+        );
+        let entries = scan(dir.path()).unwrap();
+        assert!(!entries[0].is_fork);
+        assert!(!entries[0].title.starts_with("[edited]"));
     }
 
     #[test]

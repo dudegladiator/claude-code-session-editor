@@ -50,6 +50,8 @@ mod tests {
             mtime: SystemTime::UNIX_EPOCH,
             size: 0,
             path: PathBuf::from("/tmp/x"),
+            is_fork: false,
+            fork_origin: None,
         }
     }
 

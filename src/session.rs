@@ -208,6 +208,7 @@ impl Session {
     }
 
     /// Backwards-compatible render that discards the relink count.
+    #[cfg(test)]
     pub fn render(&self, omit: &std::collections::HashSet<usize>) -> Result<String, SessionError> {
         Ok(self.render_with_relink(omit)?.0)
     }

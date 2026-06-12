@@ -19,10 +19,6 @@ struct Cli {
     #[arg(long, value_name = "DIR", global = true)]
     projects_dir: Option<PathBuf>,
 
-    /// Bypass concurrent-open detection when saving.
-    #[arg(long, global = true)]
-    force: bool,
-
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -66,7 +62,10 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Delete messages from a session by index. Auto-pairs tool_use/tool_result.
+    /// Delete messages from a session by index. Always forks: writes a NEW
+    /// session file with a new UUID and leaves the original untouched.
+    /// Output prints a `claude --resume <new-id>` command to continue.
+    /// Auto-pairs tool_use/tool_result and re-links parentUuids.
     Delete {
         /// Session id, file path, or substring of either.
         target: String,
@@ -82,7 +81,7 @@ enum Command {
         /// Inclusive range "lo..hi" (0-based).
         #[arg(long)]
         range: Option<String>,
-        /// Show what would be removed without writing.
+        /// Show what would be removed without writing the fork file.
         #[arg(long)]
         dry_run: bool,
         /// Output JSON.
@@ -95,9 +94,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Show the heaviest conversational turns by token count, descending.
+    /// Use this to pick which turns to drop with `delete`.
+    Heatmap {
+        /// Session id, file path, or substring of either.
+        target: String,
+        /// Limit output to N turns. Default 20.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Output JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Self-update to the latest release (or a specific version).
     Update {
-        /// Install a specific tag (e.g. `v0.2.0`). Default: latest.
+        /// Install a specific tag (e.g. `v1.0.0`). Default: latest.
         #[arg(long)]
         version: Option<String>,
     },
@@ -105,18 +116,6 @@ enum Command {
     /// exit codes. Designed for LLMs and scripts to read once and operate
     /// autonomously.
     AgentGuide,
-    /// Restore a session from its <file>.bak backup. Refuses to overwrite
-    /// while Claude Code holds the file open unless --force.
-    Restore {
-        /// Session id, file path, or substring of either.
-        target: String,
-        /// Just print the backup path and metadata; don't restore.
-        #[arg(long)]
-        list: bool,
-        /// Output JSON.
-        #[arg(long)]
-        json: bool,
-    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -128,7 +127,6 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         None => app::run(app::Config {
-            force: cli.force,
             projects_dir: Some(projects_dir),
         }),
         Some(Command::List {
@@ -163,17 +161,18 @@ fn main() -> anyhow::Result<()> {
                 range,
             },
             dry_run,
-            cli.force,
             json,
         ),
         Some(Command::Info { target, json }) => cli::info(&projects_dir, &target, json),
+        Some(Command::Heatmap {
+            target,
+            limit,
+            json,
+        }) => cli::heatmap(&projects_dir, &target, limit, json),
         Some(Command::Update { version }) => cli::update(version.as_deref()),
         Some(Command::AgentGuide) => {
             print!("{}", cli::AGENT_GUIDE);
             Ok(())
-        }
-        Some(Command::Restore { target, list, json }) => {
-            cli::restore(&projects_dir, &target, list, cli.force, json)
         }
     }
 }

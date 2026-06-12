@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use crate::screens;
 
 pub struct Config {
-    pub force: bool,
     pub projects_dir: Option<PathBuf>,
 }
 
@@ -14,7 +13,6 @@ pub enum Screen {
 
 pub struct App {
     pub screen: Screen,
-    pub force: bool,
     pub projects_dir: PathBuf,
     pub should_quit: bool,
 }
@@ -30,7 +28,6 @@ pub fn run(cfg: Config) -> anyhow::Result<()> {
 
     let mut app = App {
         screen: Screen::List(list_state),
-        force: cfg.force,
         projects_dir,
         should_quit: false,
     };

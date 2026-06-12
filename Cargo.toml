@@ -1,6 +1,6 @@
 [package]
 name = "cc-session"
-version = "0.4.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.75"
 description = "Interactive TUI editor for Claude Code session JSONL files. Browse, search, and surgically delete messages while preserving tool_use/tool_result pairing."
@@ -28,6 +28,7 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 nucleo-matcher = "0.3"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 assert_fs = "1"
