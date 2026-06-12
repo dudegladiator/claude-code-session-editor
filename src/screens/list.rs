@@ -201,6 +201,8 @@ mod tests {
             mtime: SystemTime::UNIX_EPOCH,
             size: 1024,
             path: PathBuf::from(format!("/tmp/{project}/{title}.jsonl")),
+            is_fork: false,
+            fork_origin: None,
         }
     }
 

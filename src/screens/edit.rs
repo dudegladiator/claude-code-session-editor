@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use ratatui::Frame;
 use serde_json::Value;
 
-use crate::io::atomic::{self, SaveError};
+use crate::cli::fork;
 use crate::pairing::PairIndex;
 use crate::session::{Message, Session};
 use crate::tokens::TokenCounter;
@@ -20,7 +20,6 @@ use super::Transition;
 pub enum Modal {
     None,
     ConfirmSave { count: usize },
-    ConfirmForce,
     SaveResult(String),
 }
 
@@ -174,31 +173,28 @@ impl EditState {
         }
     }
 
-    fn perform_save(&mut self, force: bool) -> Result<()> {
-        let content = self.session.render(&self.marked)?;
-        match atomic::save(&self.session.path, &content, force) {
+    fn perform_save(&mut self) -> Result<()> {
+        let removed = self.marked.len();
+        match fork::fork_session(&self.session, &self.marked) {
             Ok(out) => {
                 self.modal = Modal::SaveResult(format!(
-                    "Saved. {} message(s) removed. Backup: {}",
-                    self.marked.len(),
-                    out.backup.display()
+                    "Forked. {} message(s) removed.\nresume: claude --resume {}\nfile: {}",
+                    removed,
+                    out.new_session_id,
+                    out.new_path.display()
                 ));
                 self.marked.clear();
                 Ok(())
             }
-            Err(SaveError::Conflict) => {
-                self.modal = Modal::ConfirmForce;
-                Ok(())
-            }
-            Err(SaveError::Io(e)) => {
-                self.modal = Modal::SaveResult(format!("Save failed: {e}"));
+            Err(e) => {
+                self.modal = Modal::SaveResult(format!("Fork failed: {e}"));
                 Ok(())
             }
         }
     }
 }
 
-pub fn handle_key(state: &mut EditState, key: KeyEvent, force_flag: bool) -> Result<Transition> {
+pub fn handle_key(state: &mut EditState, key: KeyEvent) -> Result<Transition> {
     match &state.modal {
         Modal::ConfirmSave { count } => {
             let count = *count;
@@ -208,24 +204,13 @@ pub fn handle_key(state: &mut EditState, key: KeyEvent, force_flag: bool) -> Res
                     if count == 0 {
                         state.modal = Modal::SaveResult("no changes to save".into());
                     } else {
-                        state.perform_save(force_flag)?;
+                        state.perform_save()?;
                     }
                 }
                 _ => state.modal = Modal::None,
             }
             return Ok(Transition::None);
         }
-        Modal::ConfirmForce => match key.code {
-            KeyCode::Char('f') => {
-                state.modal = Modal::None;
-                state.perform_save(true)?;
-                return Ok(Transition::None);
-            }
-            _ => {
-                state.modal = Modal::None;
-                return Ok(Transition::None);
-            }
-        },
         Modal::SaveResult(_) => {
             state.modal = Modal::None;
             return Ok(Transition::None);
@@ -469,16 +454,10 @@ fn render_modal(frame: &mut Frame, state: &EditState, area: Rect) {
     let (title, body) = match &state.modal {
         Modal::None => return,
         Modal::ConfirmSave { count } => (
-            "save?",
+            "fork?",
             format!(
-                "delete {} message(s) and save to {}?\nbackup at <file>.bak.\n[y] confirm   any other key cancels",
-                count,
-                state.session.path.display()
+                "drop {count} message(s) and write a new session file?\noriginal stays untouched.\n[y] confirm   any other key cancels"
             ),
-        ),
-        Modal::ConfirmForce => (
-            "file is open",
-            "claude code (or another process) has this file open.\npress [f] to force save anyway, any other key to cancel.".to_string(),
         ),
         Modal::SaveResult(msg) => ("result", msg.clone()),
     };

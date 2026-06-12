@@ -52,7 +52,7 @@ fn main_loop<B: ratatui::backend::Backend>(
 fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let transition = match &mut app.screen {
         Screen::List(state) => list::handle_key(state, key),
-        Screen::Edit(state) => edit::handle_key(state.as_mut(), key, app.force),
+        Screen::Edit(state) => edit::handle_key(state.as_mut(), key),
     }?;
     apply_transition(app, transition)
 }
